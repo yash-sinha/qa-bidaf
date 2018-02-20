@@ -1,6 +1,6 @@
 from typing import List, Tuple
 import json
-
+import collections
 from allennlp.common import Registrable
 from allennlp.common.util import JsonDict, sanitize
 from allennlp.data import DatasetReader, Instance
@@ -37,9 +37,10 @@ class Predictor(Registrable):
         outputs = self._model.forward_on_instance(instance, cuda_device)
         best_span, conf, best_confs, best_starts, best_ends = self.get_best_span(outputs['span_start_logits'], outputs['span_end_logits'],
                                                                                  outputs['span_start_logits'], outputs['span_end_logits'])
-        start_logits = outputs['span_start_logits']
-        end_logits = outputs['span_end_logits']
+        # start_logits = outputs['span_start_logits']
+        # end_logits = outputs['span_end_logits']
         # span, scores = self.best_span_from_bounds(start_logits , end_logits, 10)
+        best_confs, best_starts, best_ends = self.separate_spans(best_confs, best_starts, best_ends)
         outputs['best_confs'] = best_confs
         outputs['best_starts'] = best_starts
         outputs['best_confs'] = best_confs
@@ -115,8 +116,8 @@ class Predictor(Registrable):
                 max_val = span_start_val * word_end_probs[word_ix]
                 best8_dict[max_val] = [span_start, word_ix]
 
-        best8_dict = list(sorted(best8_dict.items(), key=lambda s: s[1]))[:10]
-
+        best8_dict = list(sorted(best8_dict.items(), key=lambda s: (s[1], s[2])))[:10]
+        #sorted(unsorted, key=lambda element: (element[1], element[2]))
         best_confs = []
         best_starts = []
         best_ends = []
@@ -131,6 +132,52 @@ class Predictor(Registrable):
             best_ends.append(span_start)
 
         return best_word_span, max_val, best_confs, best_starts, best_ends
+
+    def separate_spans(self, best_confs, best_starts, best_ends):
+        new_confs = []
+        new_starts = []
+        new_ends = []
+        new_dict = {}
+        for i in range(0, len(best_confs)):
+            for j in range(best_starts[i], best_ends[i] + 1):
+                new_dict[j] = max(new_dict.get(j, -1), best_confs[i])
+
+        new_dict = collections.OrderedDict(sorted(new_dict.items()))
+        start = -1
+        end = -1
+        conf = -1
+        i = 0
+        prev = -1
+        for k, v in new_dict.items():
+            if i == 0:
+                start = k
+                end = k
+                conf = v
+                prev = k
+                new_confs.append(conf)
+                new_starts.append(start)
+            elif i == len(new_dict) - 1:
+                if conf == v and k == prev + 1:
+                    new_ends.append(k)
+                else:
+                    new_ends.append(end)
+                    new_starts.append(k)
+                    new_ends.append(k)
+                    new_confs.append(v)
+            else:
+                if conf == v and k == prev + 1:
+                    end = k
+                else:
+                    new_starts.append(k)
+                    new_confs.append(v)
+                    new_ends.append(end)
+                    end = k
+                    start = k
+                    conf = v
+            i = i + 1
+            prev = k
+
+        return new_confs, new_starts, new_ends
 
     def _json_to_instance(self, json_dict: JsonDict) -> Tuple[Instance, JsonDict]:
         """
